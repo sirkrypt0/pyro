@@ -14,9 +14,16 @@ bootstrap: deps lint-deps ## Install all dependencies
 .PHONY: deps
 deps: ## Get the dependencies
 	@go get -v -d ./...
+	@go install github.com/bufbuild/buf/cmd/buf@v0.48.2
+	@go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.27.1
+	@go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.1.0
+
+.PHONY: proto
+proto: ## Generate protobuf bindings
+	@buf --config tools/buf/buf.yaml --template tools/buf/buf.gen.yaml generate
 
 .PHONY: build
-build: deps ## Build the binary
+build: deps proto ## Build the binary
 	@go build -o $(OUT)/pyro-agent -v $(ROOT)/pyro-agent
 
 .PHONY: clean
@@ -31,8 +38,13 @@ lint-deps: ## Install linter dependencies
 golangci-lint: ## Lint the source code using golangci-lint
 	@golangci-lint run ./... --timeout=3m
 
+.PHONY: buf-lint
+buf-lint: ## Lint the protobuf files
+	@buf lint --config tools/buf/buf.yaml .
+	# @buf breaking --config tools/buf/buf.yaml --against-config tools/buf/buf.yaml --against '.git#branch=main'
+
 .PHONY: lint
-lint: golangci-lint ## Lint the source code using all linters
+lint: golangci-lint buf-lint ## Lint the source code using all linters
 
 .PHONY: test
 test: deps ## Run unit tests

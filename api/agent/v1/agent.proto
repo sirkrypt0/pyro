@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package api.agent.v1;
+
+option go_package = "github.com/sirkrypt0/pyro/api/agent_v1";
+
+service AgentService {
+  rpc ExecuteCommand(ExecuteCommandRequest) returns (ExecuteCommandResponse);
+  rpc ExecuteCommandStream(stream ExecuteCommandStreamRequest) returns (stream ExecuteCommandStreamResponse);
+}
+
+message ExecuteCommandRequest {
+  string command = 1;
+  map<string, string> environment = 2;
+}
+
+message ExecuteCommandResponse {
+  ExecuteIO stdout = 1;
+  ExecuteIO stderr = 2;
+  int32 exit_code = 3;
+}
+
+message ExecuteCommandStreamRequest {
+  message Prepare {
+    string command = 1;
+    map<string, string> environment = 2;
+  }
+
+  Prepare prepare = 1;
+  ExecuteIO stdin = 2;
+}
+
+message ExecuteCommandStreamResponse {
+  ExecuteIO stdout = 1;
+  ExecuteIO stderr = 2;
+  ExecuteResult result = 3;
+}
+
+message ExecuteResult {
+  bool exited = 1;
+  int32 exit_code = 2;
+}
+
+message ExecuteIO {
+  bool close = 1;
+  bytes data = 2;
+}
