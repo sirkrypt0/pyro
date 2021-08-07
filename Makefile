@@ -11,10 +11,12 @@ all: build
 .PHONY: bootstrap
 bootstrap: deps lint-deps ## Install all dependencies
 
-.PHONY: deps
-deps: ## Get the dependencies
-	@go get -v -d ./...
+install-buf:
 	@go install github.com/bufbuild/buf/cmd/buf@v0.48.2
+
+.PHONY: deps
+deps: install-buf ## Get the dependencies
+	@go get -v -d ./...
 	@go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.27.1
 	@go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.1.0
 
@@ -39,7 +41,7 @@ golangci-lint: ## Lint the source code using golangci-lint
 	@golangci-lint run ./... --timeout=3m
 
 .PHONY: buf-lint
-buf-lint: ## Lint the protobuf files
+buf-lint: install-buf ## Lint the protobuf files
 	@buf lint --config tools/buf/buf.yaml .
 	@buf breaking --config tools/buf/buf.yaml --against-config tools/buf/buf.yaml --against '.git#branch=main'
 
