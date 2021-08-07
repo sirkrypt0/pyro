@@ -25,8 +25,9 @@ proto: ## Generate protobuf bindings
 	@buf --config tools/buf/buf.yaml --template tools/buf/buf.gen.yaml generate
 
 .PHONY: build
-build: deps proto ## Build the binary
+build: deps proto ## Build the binaries
 	@go build -o $(OUT)/pyro-agent -v $(ROOT)/pyro-agent
+	@go build -o $(OUT)/pyro -v $(ROOT)/pyro
 
 .PHONY: clean
 clean: ## Clean artifacts
