@@ -33,7 +33,7 @@ func (s *ServerTestSuite) TeardownTest() {
 func (s *ServerTestSuite) TestExecuteCommand() {
 	ctx := context.Background()
 	req := &api.ExecuteCommandRequest{
-		Command:     "echo 'hello world'",
+		Command:     []string{"echo", "hello world"},
 		Environment: map[string]string{"PATH": "/bin"},
 	}
 	expectedResponse := &api.ExecuteCommandResponse{
@@ -56,7 +56,7 @@ func (s *ServerTestSuite) TestExecuteCommandStream() {
 	ctx := context.Background()
 	req := &api.ExecuteCommandStreamRequest{
 		Prepare: &api.ExecuteCommandStreamRequest_Prepare{
-			Command:     "echo 'hello world'",
+			Command:     []string{"echo", "hello world"},
 			Environment: map[string]string{"PATH": "/bin"},
 		},
 		Stdin: nil,

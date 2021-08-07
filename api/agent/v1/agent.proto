@@ -10,7 +10,7 @@ service AgentService {
 }
 
 message ExecuteCommandRequest {
-  string command = 1;
+  repeated string command = 1;
   map<string, string> environment = 2;
 }
 
@@ -22,7 +22,7 @@ message ExecuteCommandResponse {
 
 message ExecuteCommandStreamRequest {
   message Prepare {
-    string command = 1;
+    repeated string command = 1;
     map<string, string> environment = 2;
   }
 
