@@ -41,7 +41,7 @@ golangci-lint: ## Lint the source code using golangci-lint
 .PHONY: buf-lint
 buf-lint: ## Lint the protobuf files
 	@buf lint --config tools/buf/buf.yaml .
-	# @buf breaking --config tools/buf/buf.yaml --against-config tools/buf/buf.yaml --against '.git#branch=main'
+	@buf breaking --config tools/buf/buf.yaml --against-config tools/buf/buf.yaml --against '.git#branch=main'
 
 .PHONY: lint
 lint: golangci-lint buf-lint ## Lint the source code using all linters
