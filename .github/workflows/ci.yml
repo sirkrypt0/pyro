@@ -30,7 +30,13 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout branch
+        uses: actions/checkout@v2
+      - name: Checkout main
+        run: |
+          git fetch --no-tags --progress --no-recurse-submodules --depth=1 origin +refs/heads/main*:refs/remotes/origin/main* +refs/tags/main*:refs/tags/main*
+          git checkout --progress --force -B main refs/remotes/origin/main
+          git checkout --progress --force refs/remotes/pull/${{ github.event.number }}/merge
       - name: Set up Go
         uses: actions/setup-go@v2
         with:
