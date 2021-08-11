@@ -18,7 +18,7 @@ func newExecCmd(inr io.Reader, outw, errw io.WriteCloser) *cobra.Command {
 		Use:   "exec <command...>",
 		Short: "execute a command on the agent",
 		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Run: func(cmd *cobra.Command, args []string) {
 			ctx := cmd.Context()
 			var exitCode int
 			var err error
@@ -28,10 +28,9 @@ func newExecCmd(inr io.Reader, outw, errw io.WriteCloser) *cobra.Command {
 				exitCode, err = apiClient.Execute(args, ctx, outw, errw)
 			}
 			if err != nil {
-				return fmt.Errorf("error executing command: %w", err)
+				fmt.Printf("error executing command: %v\n", err)
 			}
 			os.Exit(exitCode)
-			return nil
 		},
 	}
 
