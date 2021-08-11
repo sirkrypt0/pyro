@@ -6,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	api "github.com/sirkrypt0/pyro/api/agent/v1"
+	"github.com/sirkrypt0/pyro/pkg/streamio"
 	"io"
 	"os/exec"
 )
-
-const streamingOutputBufferSize = 2048
 
 var (
 	ErrNoCommandGiven      = errors.New("no command given")
@@ -51,8 +50,16 @@ func (s *server) ExecuteCommand(
 		return nil, fmt.Errorf("error starting command: %w", err)
 	}
 
-	go io.Copy(&stdoutBuffer, stdout)
-	go io.Copy(&stderrBuffer, stderr)
+	go func() {
+		if _, err := io.Copy(&stdoutBuffer, stdout); err != nil {
+			s.logger.WithError(err).Warn("error copying stdout")
+		}
+	}()
+	go func() {
+		if _, err := io.Copy(&stderrBuffer, stderr); err != nil {
+			s.logger.WithError(err).Warn("error copying stderr")
+		}
+	}()
 
 	var exitCode = 0
 	if err := cmd.Wait(); err != nil {
@@ -71,7 +78,6 @@ func (s *server) ExecuteCommand(
 	}, nil
 }
 
-// TODO: think of using custom readers/writers instead of doing the copying stuff
 func (s *server) ExecuteCommandStream(stream api.AgentService_ExecuteCommandStreamServer) error {
 	s.logger.WithField("executeCommandStreamServer", stream).Debug("Got execute command request")
 
@@ -86,51 +92,39 @@ func (s *server) ExecuteCommandStream(stream api.AgentService_ExecuteCommandStre
 	cmd := exec.CommandContext(ctx, prepare.Command[0], prepare.Command[1:]...)
 	cmd.Env = append(cmd.Env, prepare.Environment...)
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("error retrieving stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("error retrieving stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("error retrieving stderr pipe: %w", err)
+	stdinReader := streamio.IoToExecuteCommandStreamServerReader{Stream: stream, ProcState: &cmd.ProcessState}
+	if err := stdinReader.BeginReceiving(); err != nil {
+		return fmt.Errorf("error starting to receive stdin: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
-		var execErr *exec.Error
-		if errors.As(err, &execErr) {
-			err := stream.Send(&api.ExecuteCommandStreamResponse{
-				Stderr: &api.ExecuteIO{Close: true, Data: []byte(execErr.Error())},
+	// TODO: Currently, we don't inform the client about closed streams. Is this fine?
+	// We could use cmd.StdinPipe() with io.Copy() and our readers instead (also see func (c *Cmd) stdin())
+	cmd.Stdin = &stdinReader
+	cmd.Stdout = &streamio.IoToExecuteCommandStreamServerWriter{Stream: stream}
+	cmd.Stderr = &streamio.IoToExecuteCommandStreamServerWriter{Stream: stream, Stderr: true}
+
+	var exitCode = 0
+	if err := cmd.Run(); err != nil {
+		switch err := err.(type) {
+		case *exec.Error:
+			err2 := stream.Send(&api.ExecuteCommandStreamResponse{
+				Stderr: &api.ExecuteIO{Close: true, Data: []byte(err.Error())},
 				Result: &api.ExecuteResult{
 					Exited:   true,
 					ExitCode: -2,
 				},
 			})
-			if err != nil {
-				return fmt.Errorf("error sending exec error: %w", err)
+			if err2 != nil {
+				return fmt.Errorf("error sending exec error: %w", err2)
 			}
 			return nil
-		}
-		return fmt.Errorf("error starting command: %w", err)
-	}
-
-	errCh := make(chan error, 3)
-	go streamStdin(ctx, stdin, errCh, stream)
-	go streamStdout(ctx, stdout, errCh, stream)
-	go streamStderr(ctx, stderr, errCh, stream)
-
-	var exitCode = 0
-	if err := cmd.Wait(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
+		case *exec.ExitError:
+			exitCode = err.ExitCode()
+		default:
 			return fmt.Errorf("error running command: %w", err)
 		}
 	}
+
 	exitResponse := api.ExecuteCommandStreamResponse{Result: &api.ExecuteResult{
 		Exited:   true,
 		ExitCode: int32(exitCode),
@@ -155,98 +149,4 @@ func prepareExecution(
 		return nil, ErrNoCommandGiven
 	}
 	return recv.Prepare, nil
-}
-
-func streamStdin(
-	ctx context.Context, stdin io.WriteCloser, errCh chan error,
-	stream api.AgentService_ExecuteCommandStreamServer,
-) {
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		recv, err := stream.Recv()
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		if recv.Stdin != nil {
-			if len(recv.Stdin.Data) != 0 {
-				if _, err := stdin.Write(recv.Stdin.Data); err != nil {
-					errCh <- err
-					return
-				}
-			}
-			if recv.Stdin.Close {
-				if err := stdin.Close(); err != nil {
-					errCh <- err
-					return
-				}
-			}
-		}
-	}
-}
-
-func streamStdout(
-	ctx context.Context, stdout io.ReadCloser, errCh chan error,
-	stream api.AgentService_ExecuteCommandStreamServer,
-) {
-	//nolint:makezero // We can't initialize with zero here as otherwise the reader won't block
-	outputBuffer := make([]byte, streamingOutputBufferSize)
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		output := api.ExecuteCommandStreamResponse{Stdout: &api.ExecuteIO{}}
-		if err := readOutput(stdout, outputBuffer, output.Stdout); err != nil {
-			errCh <- err
-			return
-		}
-
-		if err := stream.Send(&output); err != nil {
-			errCh <- err
-			return
-		}
-	}
-}
-
-func streamStderr(
-	ctx context.Context, stderr io.ReadCloser, errCh chan error,
-	stream api.AgentService_ExecuteCommandStreamServer,
-) {
-	//nolint:makezero // We can't initialize with zero here as otherwise the reader won't block
-	outputBuffer := make([]byte, streamingOutputBufferSize)
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		output := api.ExecuteCommandStreamResponse{Stderr: &api.ExecuteIO{}}
-		if err := readOutput(stderr, outputBuffer, output.Stderr); err != nil {
-			errCh <- err
-			return
-		}
-
-		if err := stream.Send(&output); err != nil {
-			errCh <- err
-			return
-		}
-	}
-}
-
-func readOutput(outr io.ReadCloser, buffer []byte, output *api.ExecuteIO) error {
-	n, err := outr.Read(buffer)
-
-	if n != 0 {
-		output.Data = buffer[:n]
-	}
-
-	if err != nil {
-		if errors.Is(err, io.EOF) && n == 0 {
-			output.Close = true
-		} else {
-			return fmt.Errorf("error reading output: %w", err)
-		}
-	}
-	return nil
 }
