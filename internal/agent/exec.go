@@ -9,6 +9,7 @@ import (
 	"github.com/sirkrypt0/pyro/pkg/streamio"
 	"io"
 	"os/exec"
+	"sync"
 )
 
 var (
@@ -92,35 +93,38 @@ func (s *server) ExecuteCommandStream(stream api.AgentService_ExecuteCommandStre
 	cmd := exec.CommandContext(ctx, prepare.Command[0], prepare.Command[1:]...)
 	cmd.Env = append(cmd.Env, prepare.Environment...)
 
-	stdinReader := streamio.IoToExecuteCommandStreamServerReader{Stream: stream, ProcState: &cmd.ProcessState}
-	if err := stdinReader.BeginReceiving(); err != nil {
-		return fmt.Errorf("error starting to receive stdin: %w", err)
+	var wg sync.WaitGroup
+	if err := s.connectIO(stream, cmd, &wg); err != nil {
+		return err
 	}
 
-	// TODO: Currently, we don't inform the client about closed streams. Is this fine?
-	// We could use cmd.StdinPipe() with io.Copy() and our readers instead (also see func (c *Cmd) stdin())
-	cmd.Stdin = &stdinReader
-	cmd.Stdout = &streamio.IoToExecuteCommandStreamServerWriter{Stream: stream}
-	cmd.Stderr = &streamio.IoToExecuteCommandStreamServerWriter{Stream: stream, Stderr: true}
-
-	var exitCode = 0
-	if err := cmd.Run(); err != nil {
-		switch err := err.(type) {
-		case *exec.Error:
-			err2 := stream.Send(&api.ExecuteCommandStreamResponse{
-				Stderr: &api.ExecuteIO{Close: true, Data: []byte(err.Error())},
+	if err := cmd.Start(); err != nil {
+		var execErr *exec.Error
+		if errors.As(err, &execErr) {
+			err = stream.Send(&api.ExecuteCommandStreamResponse{
+				Stderr: &api.ExecuteIO{Close: true, Data: []byte(execErr.Error())},
 				Result: &api.ExecuteResult{
 					Exited:   true,
 					ExitCode: -2,
 				},
 			})
-			if err2 != nil {
-				return fmt.Errorf("error sending exec error: %w", err2)
+			if err != nil {
+				return fmt.Errorf("error sending exec error: %w", err)
 			}
 			return nil
-		case *exec.ExitError:
-			exitCode = err.ExitCode()
-		default:
+		}
+		return fmt.Errorf("error starting command: %w", err)
+	}
+
+	// cmd.Wait should only be called after all reading is done
+	wg.Wait()
+
+	var exitCode = 0
+	if err := cmd.Wait(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		} else {
 			return fmt.Errorf("error running command: %w", err)
 		}
 	}
@@ -149,4 +153,79 @@ func prepareExecution(
 		return nil, ErrNoCommandGiven
 	}
 	return recv.Prepare, nil
+}
+
+func (s *server) connectIO(
+	stream api.AgentService_ExecuteCommandStreamServer, cmd *exec.Cmd, wg *sync.WaitGroup,
+) (err error) {
+	var stdinWriter, stdoutWriter, stderrWriter io.WriteCloser
+	var stdinReader, stdoutReader, stderrReader io.ReadCloser
+
+	if stdinWriter, stdoutReader, stderrReader, err = createPipes(cmd); err != nil {
+		return fmt.Errorf("error creating pipes: %w", err)
+	}
+
+	if stdinReader, stdoutWriter, stderrWriter, err = createIOToStreamConverters(stream, cmd); err != nil {
+		return fmt.Errorf("error creating IO to stream converters: %w", err)
+	}
+
+	go func() {
+		if _, err := io.Copy(stdinWriter, stdinReader); err != nil {
+			s.logger.WithError(err).Error("error copying stdin")
+		}
+		s.logger.Debug("Stdin copying finished")
+	}()
+
+	const pipeReadingGoRoutines = 2
+	wg.Add(pipeReadingGoRoutines)
+	go func() {
+		if _, err := io.Copy(stdoutWriter, stdoutReader); err != nil {
+			s.logger.WithError(err).Errorf("error copying stdout")
+		}
+		if err := stdoutWriter.Close(); err != nil {
+			s.logger.WithError(err).Errorf("error closing stdout writer")
+		}
+		wg.Done()
+		s.logger.Debug("Stdout copying finished")
+	}()
+	go func() {
+		if _, err := io.Copy(stderrWriter, stderrReader); err != nil {
+			s.logger.WithError(err).Errorf("error copying stderr")
+		}
+		if err := stderrWriter.Close(); err != nil {
+			s.logger.WithError(err).Errorf("error closing stderr writer")
+		}
+		wg.Done()
+		s.logger.Debug("Stderr copying finished")
+	}()
+
+	return nil
+}
+
+func createPipes(cmd *exec.Cmd) (stdinWriter io.WriteCloser, stdoutReader, stderrReader io.ReadCloser, err error) {
+	if stdinWriter, err = cmd.StdinPipe(); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed creating stdin pipe: %w", err)
+	}
+	if stdoutReader, err = cmd.StdoutPipe(); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed creating stdout pipe: %w", err)
+	}
+	if stderrReader, err = cmd.StderrPipe(); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed creating stdout pipe: %w", err)
+	}
+	return stdinWriter, stdoutReader, stderrReader, nil
+}
+
+func createIOToStreamConverters(
+	stream api.AgentService_ExecuteCommandStreamServer, cmd *exec.Cmd,
+) (stdinReader io.ReadCloser, stdoutWriter, stderrWriter io.WriteCloser, err error) {
+	if stdinReader, err = streamio.NewIoToExecuteCommandStreamServerReader(stream); err != nil {
+		return nil, nil, nil, fmt.Errorf("error creating new stdin reader: %w", err)
+	}
+	if stdoutWriter, err = streamio.NewIoToExecuteCommandStreamServerWriter(stream, false); err != nil {
+		return nil, nil, nil, fmt.Errorf("error creating new stdout writer: %w", err)
+	}
+	if stderrWriter, err = streamio.NewIoToExecuteCommandStreamServerWriter(stream, true); err != nil {
+		return nil, nil, nil, fmt.Errorf("error creating new stderr writer: %w", err)
+	}
+	return stdinReader, stdoutWriter, stderrWriter, nil
 }

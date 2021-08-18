@@ -12,7 +12,7 @@ var log = &logrus.Logger{
 		FullTimestamp: true,
 	},
 	Hooks: make(logrus.LevelHooks),
-	Level: logrus.InfoLevel,
+	Level: logrus.DebugLevel,
 }
 
 func GetLogger(pkg string) *logrus.Entry {
