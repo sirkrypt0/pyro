@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/kr/pty"
 	api "github.com/sirkrypt0/pyro/api/agent/v1"
 	"io"
 	"os/exec"
@@ -70,7 +71,7 @@ func (s *server) ExecuteCommandStream(stream api.AgentService_ExecuteCommandStre
 	cmd.Env = append(cmd.Env, prepare.Environment...)
 
 	var exitCode int
-	exitCode, err = runCommand(cmd, stream, ctx)
+	exitCode, err = runCommand(cmd, prepare.Tty, stream, ctx)
 	if err != nil {
 		return fmt.Errorf("error running command: %w", err)
 	}
@@ -102,11 +103,22 @@ func prepareExecution(
 }
 
 func runCommand(
-	cmd *exec.Cmd, stream api.AgentService_ExecuteCommandStreamServer, ctx context.Context,
+	cmd *exec.Cmd, tty bool, stream api.AgentService_ExecuteCommandStreamServer, ctx context.Context,
 ) (exitCode int, err error) {
-	stdin, stdout, stderr, err := connectCommandPipes(cmd)
-	if err != nil {
-		return -2, fmt.Errorf("error connecting pipes: %w", err)
+	var stdin io.WriteCloser
+	var stdout, stderr io.ReadCloser
+	if tty {
+		ptmx, err := pty.Start(cmd)
+		if err != nil {
+			return -2, fmt.Errorf("error creating pty: %w", err)
+		}
+		// Make sure to close the pty at the end.
+		defer func() { _ = ptmx.Close() }()
+	} else {
+		stdin, stdout, stderr, err = connectCommandPipes(cmd)
+		if err != nil {
+			return -2, fmt.Errorf("error connecting pipes: %w", err)
+		}
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -145,6 +157,7 @@ func runCommand(
 }
 
 func connectCommandPipes(cmd *exec.Cmd) (stdin io.WriteCloser, stdout, stderr io.ReadCloser, err error) {
+	pty.Start()
 	stdin, err = cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("error retrieving stdin pipe: %w", err)

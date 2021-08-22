@@ -24,6 +24,7 @@ message ExecuteCommandStreamRequest {
   message Prepare {
     repeated string command = 1;
     repeated string environment = 2;
+    bool tty = 3;
   }
 
   Prepare prepare = 1;
