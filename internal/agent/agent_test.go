@@ -34,7 +34,7 @@ func (s *ServerTestSuite) TestExecuteCommand() {
 	ctx := context.Background()
 	req := &api.ExecuteCommandRequest{
 		Command:     []string{"echo", "hello world"},
-		Environment: map[string]string{"PATH": "/bin"},
+		Environment: []string{"MY_ENV=test"},
 	}
 	expectedResponse := &api.ExecuteCommandResponse{
 		Stdout:   &api.ExecuteIO{Close: true, Data: []byte("stdout")},
@@ -57,7 +57,7 @@ func (s *ServerTestSuite) TestExecuteCommandStream() {
 	req := &api.ExecuteCommandStreamRequest{
 		Prepare: &api.ExecuteCommandStreamRequest_Prepare{
 			Command:     []string{"echo", "hello world"},
-			Environment: map[string]string{"PATH": "/bin"},
+			Environment: []string{"MY_ENV=test"},
 		},
 		Stdin: nil,
 	}
